@@ -6,21 +6,61 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.media.AudioManager;
+import android.net.Uri;
+import android.os.Build;
 import android.os.PersistableBundle;
 import android.os.Vibrator;
+import android.text.TextUtils;
 import android.util.Log;
 
 import com.termux.api.util.ResultReturner;
 
 import java.io.File;
 import java.io.PrintWriter;
+import java.util.ArrayList;
+import java.util.List;
 
 public class JobSchedulerAPI {
 
     private static final String LOG_TAG = "JobSchedulerAPI";
 
 
+    private static String formatJobInfo(JobInfo jobInfo) {
+        final String path = jobInfo.getExtras().getString(SchedulerJobService.SCRIPT_FILE_PATH);
+        List<String> description = new ArrayList<String>();
+        if (jobInfo.isPeriodic()) {
+            description.add(String.format("(periodic: %dms)", jobInfo.getIntervalMillis()));
+        }
+        if (jobInfo.isRequireCharging()) {
+            description.add("(while charging)");
+        }
+        if (jobInfo.isRequireDeviceIdle()) {
+            description.add("(while idle)");
+        }
+        if (jobInfo.isPersisted()) {
+            description.add("(persisted)");
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (jobInfo.isRequireBatteryNotLow()) {
+                description.add("(battery not low)");
+            }
+            if (jobInfo.isRequireStorageNotLow()) {
+                description.add("(storage not low)");
+            }
+        }
+        if (Build.VERSION.SDK_INT >= 28) {
+            description.add(String.format("(network: %s)", jobInfo.getRequiredNetwork().toString()));
+        }
+
+        return String.format("Job %d: %s\t%s", jobInfo.getId(), path,
+                TextUtils.join(" ", description));
+
+    }
     static void onReceive(TermuxApiReceiver apiReceiver, Context context, Intent intent) {
+
+        final boolean pending = intent.getBooleanExtra("pending", false);
+
+        final boolean cancel = intent.getBooleanExtra("cancel", false);
 
         final String scriptPath = intent.getStringExtra("script");
 
@@ -31,6 +71,56 @@ public class JobSchedulerAPI {
         final boolean charging = intent.getBooleanExtra("charging", false);
         final boolean idle = intent.getBooleanExtra("idle", false);
         final boolean storageNotLow = intent.getBooleanExtra("storage_not_low", false);
+
+        final String triggerContent = intent.getStringExtra("trigger_content_uri");
+        final int triggerContentFlag = intent.getIntExtra("trigger_content_flag", 1);
+
+
+
+        JobScheduler jobScheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+        if (pending) {
+            // Only display pending jobs
+            for (JobInfo job : jobScheduler.getAllPendingJobs()) {
+                final JobInfo j = job;
+                ResultReturner.returnData(apiReceiver, intent, new ResultReturner.ResultWriter() {
+                    @Override
+                    public void writeResult(PrintWriter out) {
+                        out.println(String.format("Pending: %s", j.getId(), formatJobInfo(j)));
+                    }
+                });
+            }
+            return;
+        } else if (cancel) {
+            final JobInfo j;
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                j = jobScheduler.getPendingJob(jobId);
+                if (j == null) {
+                    ResultReturner.returnData(apiReceiver, intent, new ResultReturner.ResultWriter() {
+                        @Override
+                        public void writeResult(PrintWriter out) {
+                            out.println(String.format("No job with id %", jobId));
+                        }
+                    });
+                    return;
+                } else {
+                    ResultReturner.returnData(apiReceiver, intent, new ResultReturner.ResultWriter() {
+                        @Override
+                        public void writeResult(PrintWriter out) {
+                            out.println(String.format("Sending cancel for %s", formatJobInfo(j)));
+                        }
+                    });
+                }
+            } else {
+                ResultReturner.returnData(apiReceiver, intent, new ResultReturner.ResultWriter() {
+                    @Override
+                    public void writeResult(PrintWriter out) {
+                        out.println(String.format("Sending cancel for job %d", jobId));
+                    }
+                });
+            }
+            jobScheduler.cancel(jobId);
+        }
+
 
         int networkTypeCode = JobInfo.NETWORK_TYPE_NONE;
         if (networkType != null) {
@@ -84,21 +174,14 @@ public class JobSchedulerAPI {
             return;
         }
 
+        Uri contentUri = null;
+        if (triggerContent != null) {
+            contentUri = Uri.parse(triggerContent);
+        }
         PersistableBundle extras = new PersistableBundle();
         extras.putString(SchedulerJobService.SCRIPT_FILE_PATH, file.getAbsolutePath());
 
 
-        JobScheduler jobScheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
-        // Display pending jobs
-        for (JobInfo job : jobScheduler.getAllPendingJobs()) {
-            final JobInfo j = job;
-            ResultReturner.returnData(apiReceiver, intent, new ResultReturner.ResultWriter() {
-                @Override
-                public void writeResult(PrintWriter out) {
-                    out.println(String.format("Pending job %d %s", j.getId(), j.toString()));
-                }
-            });
-        }
 
         ComponentName serviceComponent = new ComponentName(context, SchedulerJobService.class);
         JobInfo.Builder builder = null;
@@ -109,11 +192,18 @@ public class JobSchedulerAPI {
                 .setRequiresCharging(charging)
                 .setRequiresDeviceIdle(idle);
 
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             builder = builder.setRequiresBatteryNotLow(batteryNotLow);
             builder = builder.setRequiresStorageNotLow(storageNotLow);
         }
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            if (contentUri != null) {
+                builder = builder.addTriggerContentUri(
+                        new JobInfo.TriggerContentUri(contentUri,
+                        triggerContentFlag));
+            }
+        }
         if (periodicMillis > 0) {
             builder = builder.setPeriodic(periodicMillis);
         }
