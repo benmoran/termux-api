@@ -71,6 +71,7 @@ public class JobSchedulerAPI {
         final boolean charging = intent.getBooleanExtra("charging", false);
         final boolean idle = intent.getBooleanExtra("idle", false);
         final boolean storageNotLow = intent.getBooleanExtra("storage_not_low", false);
+        final boolean persisted = intent.getBooleanExtra("persisted", false);
 
         final String triggerContent = intent.getStringExtra("trigger_content_uri");
         final int triggerContentFlag = intent.getIntExtra("trigger_content_flag", 1);
@@ -190,7 +191,8 @@ public class JobSchedulerAPI {
                 .setExtras(extras)
                 .setRequiredNetworkType(networkTypeCode)
                 .setRequiresCharging(charging)
-                .setRequiresDeviceIdle(idle);
+                .setRequiresDeviceIdle(idle)
+                .setPersisted(persisted);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             builder = builder.setRequiresBatteryNotLow(batteryNotLow);
